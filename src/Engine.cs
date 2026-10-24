@@ -203,6 +203,85 @@ namespace PotatoMixer
     // One program as shown in the app-volume panel (all of its audio sessions on all playback devices, merged).
     class AppVol { public string Name; public float Volume; public bool Mute; public float Peak; }
 
+    // Removes short noises (finger snaps and taps, keyboard and mouse clicks, bumps on the desk) but lets speech through.
+    // The signal is delayed by 40 ms so every 5 ms frame can "look ahead" at what comes next.
+    // A sudden jump in loudness that is NOT followed (within 40 ms) by a real voice sound is a click / snap / knock: it is muted
+    // together with its whole ringing tail, even while you are talking. A "voice sound" = a clear pitch (70-400 Hz) in a sound that
+    // has the normal brightness of a vowel: ringing plastic keys and snaps are too bright, a desk knock is too dull, noise has no pitch.
+    class ClickGuard
+    {
+        const int F = 240, L = 8, W = 240;               // 5 ms frames; 8 frames (40 ms) look-ahead; pitch window = 240 samples at 12 kHz = 20 ms
+        List<float> inq = new List<float>(); Queue<float> outq = new Queue<float>();
+        Queue<float[]> fr = new Queue<float[]>();
+        List<bool> act = new List<bool>(), voi = new List<bool>(), imp = new List<bool>(), impHf = new List<bool>();
+        List<double> hfl = new List<double>();            // high-frequency loudness (dB) of the delayed frames
+        List<float> ds = new List<float>();               // mono signal at 12 kHz for pitch detection
+        double nf, prevE, prevHf; bool open, started, suppress; int hold; float gPrev = 1;
+        public ClickGuard() { for (int i = 0; i < F * L * 2 + 64; i++) outq.Enqueue(0f); }
+
+        // 0 = not a voice ... 1 = clear voice. A voice has a pitch (70-400 Hz) and does NOT repeat much faster than that; a ringing key or snap
+        // is one fast tone (it repeats at lags far shorter than the pitch lag), so it is rejected.
+        double Periodicity()
+        {
+            int n = ds.Count; if (n < W + 180) return 0; int s = n - W; double rPitch = 0, rSmall = 0;
+            double e0 = 0; for (int i = 0; i < W; i++) e0 += ds[s + i] * ds[s + i]; if (e0 < 1e-9) return 0;
+            for (int lag = 4; lag <= 171; lag++)
+            {
+                if (lag > 28 && lag < 30) continue;
+                double c = 0, e1 = 0; for (int i = 0; i < W; i++) { double a = ds[s + i], b = ds[s + i - lag]; c += a * b; e1 += b * b; }
+                double r = c / Math.Sqrt(e0 * e1 + 1e-12);
+                if (lag < 30) { if (r > rSmall) rSmall = r; } else if (r > rPitch) rPitch = r;
+            }
+            return (rSmall < 0.9 * rPitch) ? rPitch : 0;
+        }
+        public void Process(float[] b, int n, float k)
+        {
+            double margin = 15.0 - 0.9 * k, jump = 18.0 - 0.8 * k, jumpHf = 12.0 - 0.5 * k; int need = 4 + (int)Math.Round(k * 0.4);
+            for (int i = 0; i < n; i++) { inq.Add(b[2 * i]); inq.Add(b[2 * i + 1]); }
+            while (inq.Count >= F * 2)
+            {
+                float[] f = new float[F * 2]; inq.CopyTo(0, f, 0, F * 2); inq.RemoveRange(0, F * 2);
+                double s = 0; for (int i = 0; i < f.Length; i++) s += f[i] * f[i];
+                double e = 10 * Math.Log10(s / f.Length + 1e-12);
+                for (int i = 0; i + 3 < F; i += 4) ds.Add((f[2 * i] + f[2 * i + 1] + f[2 * i + 2] + f[2 * i + 3] + f[2 * i + 4] + f[2 * i + 5] + f[2 * i + 6] + f[2 * i + 7]) * 0.125f);
+                if (ds.Count > 2 * W + 400) ds.RemoveRange(0, ds.Count - (W + 400));
+                if (!started) { nf = e; prevE = e; started = true; }
+                else if (e < nf) nf = nf * 0.8 + e * 0.2; else nf += 0.0025;           // noise floor: falls fast, rises very slowly
+                if (nf > e) nf = e;
+                bool a = e > nf + margin;
+                // brightness = how much of the frame is high-frequency (0.0012 .. 0.2 is the range of vowels)
+                double dsum = 0, ssum = 0; for (int i = 1; i < F; i++) { double dd = f[2 * i] - f[2 * (i - 1)]; dsum += dd * dd; ssum += f[2 * i] * (double)f[2 * i]; }
+                double br = ssum > 0 ? dsum / ssum : 0;
+                bool v = a && br > 0.0012 && br < 0.2 && Periodicity() > 0.5;
+                double hf = 10 * Math.Log10(dsum / F + 1e-12);
+                bool im = a && (e - prevE) > jump;                                       // sudden jump in loudness (click in silence)
+                bool imh = a && (hf - prevHf) > jumpHf;                                  // sudden jump in the high frequencies (click in the middle of speech)
+                prevE = e; prevHf = hf;
+                fr.Enqueue(f); act.Add(a); voi.Add(v); imp.Add(im); impHf.Add(imh); hfl.Add(hf);
+                if (fr.Count < L) continue;
+                float[] o = fr.Dequeue(); bool a0 = act[0], v0 = voi[0], i0 = imp[0];
+                int cnt = 0; bool anyV = false; for (int i = 0; i < L && i < act.Count; i++) { if (act[i]) cnt++; if (voi[i]) anyV = true; }
+                bool hfFalls = hfl.Count > 2 && hfl[2] < hfl[0] - 6;                  // the bright part dies away within 10 ms (a fricative "s" does not)
+                bool clickInSpeech = impHf[0] && hfFalls && !v0;                       // bright, quickly dying, not a voice: a key hit while talking
+                act.RemoveAt(0); voi.RemoveAt(0); imp.RemoveAt(0); impHf.RemoveAt(0); hfl.RemoveAt(0);
+                if (suppress) { if (v0 || !a0) suppress = false; }                       // the ring is over, or a voice started
+                if (!suppress && ((i0 && !anyV) || clickInSpeech)) { suppress = true; open = false; }         // click / snap / knock: muted with its tail, even in the middle of speech
+                if (!suppress)
+                {
+                    if (open) { if (a0) hold = 28; else if (--hold <= 0) open = false; }
+                    else if (a0 && cnt >= need) { open = true; hold = 28; }              // sustained -> speech
+                }
+                float g = (suppress || (a0 && !open)) ? 0f : 1f;
+                for (int i = 0; i < F; i++)
+                {
+                    float gg = g < gPrev ? g : gPrev + (g - gPrev) * (i + 1) / F;   // mute at once (the click is in the first milliseconds), come back softly
+                    outq.Enqueue(o[2 * i] * gg); outq.Enqueue(o[2 * i + 1] * gg);
+                }
+                gPrev = g;
+            }
+            for (int i = 0; i < n; i++) { b[2 * i] = outq.Count > 0 ? outq.Dequeue() : 0f; b[2 * i + 1] = outq.Count > 0 ? outq.Dequeue() : 0f; }
+        }
+    }
     class Biquad
     {
         double b0 = 1, b1, b2, a1, a2; double[] z1 = new double[2], z2 = new double[2];
@@ -340,14 +419,22 @@ namespace PotatoMixer
         public static void Start()
         {
             timeBeginPeriod(1);
-            // Autosave: anything changed is written to disk within about half a second, even if the program is killed or crashes later.
-            saver = new Timer(delegate { try { SaveIfChanged(false); } catch { } }, null, 500, 500);
-            AppDomain.CurrentDomain.ProcessExit += delegate { try { SaveIfChanged(true); } catch { } };
             for (int i = 0; i < 8; i++) rings[i] = new Ring();
-            Load(SettingsPath);
-            AutoCable();
+            // Read the saved settings FIRST. Saving is switched off until this succeeds, so a failed read can never overwrite your settings with empty ones.
+            loaded = LoadSafe(SettingsPath);
+            LogStart("settings loaded=" + loaded + " (" + F.Count + " numbers, " + S.Count + " texts)");
+            // Autosave: anything changed is written to disk within about half a second, even if the program is killed or crashes later.
+            int watchTick = 0;
+            saver = new Timer(delegate
+            {
+                try { SaveIfChanged(false); } catch { }
+                if (++watchTick % 20 == 0) { try { CableWatch(); } catch { } }   // every ~10 s
+            }, null, 500, 500);
+            AppDomain.CurrentDomain.ProcessExit += delegate { try { SaveIfChanged(true); } catch { } };
+            try { AutoCable(); } catch (Exception ex) { LogError(ex); }
             RestartAll();
             StartAppWatch();
+            LogStart("engine started");
         }
         public static void Shutdown() { for (int i = 0; i < 8; i++) { StopW(ref stripW[i]); StopW(ref busW[i]); } SaveIfChanged(true); }
         public static void SaveIfChanged(bool force) { if (changed || force) { changed = false; try { Save(SettingsPath); } catch { } } }
@@ -361,12 +448,48 @@ namespace PotatoMixer
             if (!F.ContainsKey("Strip[0].B1")) { F["Strip[0].B1"] = 1; F["Strip[1].B1"] = 1; changed = true; }
         }
 
+        // If the virtual cable shows up later than the program (right after Windows starts), bind bus B1 to it then.
+        static void CableWatch()
+        {
+            string cable = GetStr("Bus[5].Device.name");
+            if (cable.Length > 0 && cable.StartsWith("CABLE Input", StringComparison.OrdinalIgnoreCase)) return;
+            AutoCable();
+            if (GetStr("Bus[5].Device.name").Length > 0) { dirty = true; StartBus(5); }
+        }
+
         static void RestartAll() { for (int i = 0; i < 8; i++) { StartStrip(i); StartBus(i); } }
 
         static readonly object saveLock = new object();
+        static volatile bool loaded;
         static void Save(string path)
         {
+            if (!loaded && path == SettingsPath) return;   // never write over the settings file before it has been read successfully
             lock (saveLock) SaveCore(path);
+        }
+
+        // Reads the settings file (retrying if it is busy for a moment); falls back to the last good backup. Returns false only if a file exists but cannot be read.
+        static bool LoadSafe(string path)
+        {
+            if (!File.Exists(path)) return true;   // first run
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                try { Load(path); try { File.Copy(path, path + ".bak", true); } catch { } return true; }
+                catch (Exception ex) { LogError(ex); Thread.Sleep(250); }
+            }
+            try { if (File.Exists(path + ".bak")) { Load(path + ".bak"); return true; } } catch (Exception ex) { LogError(ex); }
+            return false;
+        }
+
+        // Small log of each start (time, arguments, whether the settings were read) to help find problems that only happen at Windows start.
+        public static void LogStart(string what)
+        {
+            try
+            {
+                string p = Path.Combine(Path.GetDirectoryName(SettingsPath), "startup.log");
+                if (File.Exists(p) && new FileInfo(p).Length > 60000) File.Delete(p);
+                File.AppendAllText(p, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  pid " + System.Diagnostics.Process.GetCurrentProcess().Id + "  " + what + "  [" + Environment.CommandLine + "]\n");
+            }
+            catch { }
         }
         static void SaveCore(string path)
         {
@@ -406,13 +529,24 @@ namespace PotatoMixer
 
         static void StopW(ref Worker w) { if (w != null) { w.Stop = true; if (w.T != null) w.T.Join(500); w = null; } }
 
+        // Runs an audio worker and starts it again 5 s after it fails or its device disappears. This is what makes it work right after Windows
+        // starts (audio devices are not ready yet) and after a headset is unplugged and plugged back in.
+        static void RetryLoop(Worker w, Action body, string what)
+        {
+            while (!w.Stop)
+            {
+                try { body(); } catch (Exception ex) { Status = what + ": " + Friendly(ex); LogError(ex); }
+                for (int i = 0; i < 50 && !w.Stop; i++) Thread.Sleep(100);
+            }
+        }
+
         static void StartStrip(int i)
         {
             StopW(ref stripW[i]);
             if (i == 2) { StartApp(); return; }
             string name = GetStr("Strip[" + i + "].Device.name"); if (name.Length == 0) return;
             Worker w = new Worker(); stripW[i] = w;
-            w.T = new Thread(delegate() { try { CaptureLoop(i, name, w); } catch (Exception ex) { Status = "Strip " + (i + 1) + ": " + Friendly(ex); } }) { IsBackground = true, Priority = ThreadPriority.AboveNormal };
+            w.T = new Thread(delegate() { RetryLoop(w, delegate { CaptureLoop(i, name, w); }, "Strip " + (i + 1)); }) { IsBackground = true, Priority = ThreadPriority.AboveNormal };
             w.T.Start();
         }
         // ---- per-application audio (process loopback capture, Windows 10 build 19041+), shown as strip 3
@@ -620,7 +754,7 @@ namespace PotatoMixer
         {
             StopW(ref busW[j]);
             Worker w = new Worker(); busW[j] = w; string name = GetStr("Bus[" + j + "].Device.name");
-            w.T = new Thread(delegate() { try { BusLoop(j, name, w); } catch (Exception ex) { Status = BusName(j) + ": " + Friendly(ex); try { File.AppendAllText(Path.Combine(Path.GetDirectoryName(SettingsPath), "error.log"), ex.ToString() + "\n"); } catch { } } }) { IsBackground = true, Priority = ThreadPriority.AboveNormal };
+            w.T = new Thread(delegate() { RetryLoop(w, delegate { BusLoop(j, name, w); }, BusName(j)); }) { IsBackground = true, Priority = ThreadPriority.AboveNormal };
             w.T.Start();
         }
 
@@ -671,7 +805,7 @@ namespace PotatoMixer
         class StripState
         {
             public Biquad[] eq = { new Biquad(), new Biquad(), new Biquad() };
-            public float prevG = 1, gate = 1, comp = 1; public Denoiser dn;
+            public float prevG = 1, gate = 1, comp = 1; public Denoiser dn; public ClickGuard cg; public int gateHold;
         }
 
         static void CaptureLoop(int i, string name, Worker w)
@@ -709,7 +843,7 @@ namespace PotatoMixer
         static readonly string[,] BK = MakeBK();
         static string[,] MakeSK()
         {
-            string[] props = { "Gain", "Mute", "Solo", "Mono", "MC", "Pan_x", "EQGain1", "EQGain2", "EQGain3", "Denoiser", "Gate", "Comp", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3" };
+            string[] props = { "Gain", "Mute", "Solo", "Mono", "MC", "Pan_x", "EQGain1", "EQGain2", "EQGain3", "Denoiser", "Gate", "Comp", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "Clicks" };
             string[,] r = new string[8, props.Length];
             for (int s = 0; s < 8; s++) for (int k = 0; k < props.Length; k++) r[s, k] = "Strip[" + s + "]." + props[k];
             return r;
@@ -735,11 +869,20 @@ namespace PotatoMixer
             // noise suppression first, so the gate and compressor see the cleaned signal
             float dk = Get(SK[i, 9]);
             if (dk > 0.05f) { if (st.dn == null) st.dn = new Denoiser(); st.dn.Process(b, n, dk); } else st.dn = null;
+            // short noises (finger taps, key and mouse clicks) are muted before the gate looks at the level
+            float xk = Get(SK[i, 20]);
+            if (xk > 0.05f) { if (st.cg == null) st.cg = new ClickGuard(); st.cg.Process(b, n, xk); } else st.cg = null;
             // block level for gate / compressor
             double sum = 0; for (int k = 0; k < n * 2; k++) sum += b[k] * b[k];
             float rmsDb = Db((float)Math.Sqrt(sum / (n * 2)));
             float gk = Get(SK[i, 10]), ck = Get(SK[i, 11]);
-            if (gk > 0) { float tgt = rmsDb > -70f + gk * 4.5f ? 1f : 0f; st.gate += (tgt - st.gate) * (tgt > st.gate ? 0.6f : 0.12f); } else st.gate = 1f;
+            if (gk > 0)
+            {
+                // threshold: strength 1..10 -> -62 .. -26 dB. The gate stays open for 150 ms after the voice drops, so words are not chopped.
+                bool above = rmsDb > -66f + gk * 4f; if (above) st.gateHold = 7200; else st.gateHold -= n;
+                float tgt = st.gateHold > 0 ? 1f : 0f; st.gate += (tgt - st.gate) * (tgt > st.gate ? 0.7f : 0.15f);
+            }
+            else st.gate = 1f;
             if (ck > 0)
             {
                 float thr = -3f * ck, red = rmsDb > thr ? (rmsDb - thr) * 0.75f : 0f;
@@ -800,7 +943,8 @@ namespace PotatoMixer
             {
                 if (rc == null)
                 {
-                    while (!w.Stop) Thread.Sleep(100);   // no device: nothing to mix or play
+                    if (name.Length > 0) return;   // the device could not be opened: let the retry loop try again later
+                    while (!w.Stop) Thread.Sleep(100);   // no device chosen: nothing to mix or play
                     return;
                 }
                 while (!w.Stop)

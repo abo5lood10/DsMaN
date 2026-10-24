@@ -79,6 +79,20 @@ namespace PotatoMixer
             }
         }
 
+        // Normal button, plus a simple hover hint: the button gets a shade and a thin edge (white on coloured buttons, near-black green on grey ones). Nothing moves, no shadow.
+        public static void PillH(Graphics g, RectangleF r, bool on, Color? tint, bool hover)
+        {
+            Pill(g, r, on, tint);
+            if (!hover) return;
+            // coloured (active) buttons: white inner shade and white edge; grey (off) buttons: near-black green shade and edge
+            Color fill = on ? Color.FromArgb(46, 217, 217, 217) : Color.FromArgb(106, 3, 20, 11);   // 125 -> 106: 15 % less dark   // 217 = 85 % of white (255)
+            Color edge = on ? Color.FromArgb(215, 217, 217, 217) : Color.FromArgb(200, 4, 22, 12);
+            using (GraphicsPath p = RR(r, r.Height / 2.4f))
+            {
+                using (Brush b = new SolidBrush(fill)) g.FillPath(b, p);
+                using (Pen pen = new Pen(edge, 0.88f)) g.DrawPath(pen, p);
+            }
+        }
         public static void Txt(Graphics g, string s, Font f, Color c, RectangleF r, StringAlignment h)
         {
             using (StringFormat sf = new StringFormat { Alignment = h, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
@@ -336,6 +350,9 @@ namespace PotatoMixer
         public static List<VC> All = new List<VC>();
         protected VC() { DoubleBuffered = true; SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw, true); BackColor = Color.Transparent; All.Add(this); }
         public virtual void Sync() { }
+        protected bool Hover;   // mouse is over the control
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); Hover = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); Hover = false; Invalidate(); }
     }
 
     class Surface : Panel
@@ -495,7 +512,7 @@ namespace PotatoMixer
         {
             Graphics g = e.Graphics; T.Setup(g);
             Color? tint = Kind == 1 ? (Color?)T.Red : (Kind == 2 ? (Color?)T.Yellow : null);
-            T.Pill(g, new RectangleF(1, 1, Width - 3, Height - 3), On, tint);
+            T.PillH(g, new RectangleF(1, 1, Width - 3, Height - 3), On, tint, Hover);
             T.Txt(g, Kind == 0 ? "▶" + Label : Label, T.F(9f, FontStyle.Bold), On ? (Kind == 2 ? Color.FromArgb(40, 34, 10) : Color.White) : T.Dim, new RectangleF(0, 0, Width, Height), StringAlignment.Center);
         }
         protected override void OnMouseClick(MouseEventArgs e)
@@ -513,7 +530,7 @@ namespace PotatoMixer
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics; T.Setup(g);
-            T.Pill(g, new RectangleF(1, 1, Width - 3, Height - 3), Primary, null);
+            T.PillH(g, new RectangleF(1, 1, Width - 3, Height - 3), Primary, null, Hover);
             T.Txt(g, Text2, T.F(9.5f, FontStyle.Bold), T.Text, new RectangleF(0, 0, Width, Height), StringAlignment.Center);
         }
         protected override void OnMouseClick(MouseEventArgs e) { if (Act != null) Act(); }
@@ -559,7 +576,7 @@ namespace PotatoMixer
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics; T.Setup(g);
-            T.Pill(g, new RectangleF(1, 1, Width - 3, Height - 3), dev.Length > 0, null);
+            T.PillH(g, new RectangleF(1, 1, Width - 3, Height - 3), dev.Length > 0, null, Hover);
             T.Txt(g, (lbl.Length > 0 ? lbl : tag) + " ▾", T.F(10.5f, FontStyle.Bold), dev.Length > 0 ? Color.White : T.Dim, new RectangleF(2, 0, Width - 4, Height), StringAlignment.Center);
         }
         protected override void OnMouseClick(MouseEventArgs e)
@@ -576,7 +593,7 @@ namespace PotatoMixer
     // Update check: a small text manifest ("version=2.1" and "url=<link or path to the new DsMaN.exe>") at a link or path set in Settings.
     static class Updater
     {
-        public const string Version = "2.1";
+        public const string Version = "2.2";
         // Where new versions are announced: a small text file in the project's GitHub repository (version=... and url=... lines).
         // The "Update source" setting in the menu overrides it (a link or a file path).
         public const string DefaultSource = "https://raw.githubusercontent.com/abo5lood10/DsMaN/main/update.txt";
@@ -750,7 +767,7 @@ namespace PotatoMixer
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics; T.Setup(g);
-            T.Pill(g, new RectangleF(1, 1, Width - 3, Height - 3), app.Length > 0, null);
+            T.PillH(g, new RectangleF(1, 1, Width - 3, Height - 3), app.Length > 0, null, Hover);
             string label = app.Length > 0 ? (app.Length > 14 ? app.Substring(0, 14) + ".." : app) : "Share app";
             T.Txt(g, label + " ▾", T.F(9.5f, FontStyle.Bold), app.Length > 0 ? Color.White : T.Text, new RectangleF(0, 0, Width, Height), StringAlignment.Center);
         }
@@ -882,7 +899,7 @@ namespace PotatoMixer
     // ---------------------------------------------------------------- main form
     class MainForm : Form
     {
-        List<Fader> faders = new List<Fader>(); List<Tog> devTogs = new List<Tog>(); UpdateBtn upd; Cmd appVolBtn; bool posReady, autoPending;
+        List<Fader> faders = new List<Fader>(); List<Tog> devTogs = new List<Tog>(); UpdateBtn upd; Cmd appVolBtn; bool posReady, autoPending, hideOnce; NotifyIcon tray;
         Timer timer = new Timer(); Title title; int ticks;
         const int TOP = 70;
 
@@ -892,8 +909,12 @@ namespace PotatoMixer
             FormBorderStyle = FormBorderStyle.None; DoubleBuffered = true;
             ClientSize = new Size(T.W, T.H); StartPosition = FormStartPosition.CenterScreen;
             BuildHeader(); BuildStrips(); BuildMaster();
-            if (startup) WindowState = FormWindowState.Minimized;
-            Load += delegate { Region = new Region(T.RR(new RectangleF(0, 0, Width, Height), 22)); Eng.Start(); SyncAll(); Updater.Check(delegate { AutoUpdate(); });
+            Surface wallpaper = new Surface { Bounds = new Rectangle(0, 0, T.W, T.H) };   // full-window gradient behind everything: no flat-coloured strip at the window edges
+            Controls.Add(wallpaper); wallpaper.SendToBack();
+            if (startup) { WindowState = FormWindowState.Minimized; hideOnce = true; Shown += delegate { if (hideOnce) { hideOnce = false; HideToTray(); } }; }   // at Windows start: go straight to the tray
+            BuildTray();
+            Load += delegate { Region = new Region(T.RR(new RectangleF(0, 0, Width, Height), 22)); try { Eng.Start(); } catch (Exception ex) { Eng.LogError(ex); Eng.LogStart("Start failed: " + ex.Message); }
+                SyncAll(); Updater.Check(delegate { AutoUpdate(); });
                 if (Eng.Get("Window.Saved") > 0)   // reopen where the window was left
                 {
                     Point pt = new Point((int)Eng.Get("Window.X"), (int)Eng.Get("Window.Y")); Rectangle wr = new Rectangle(pt, Size);
@@ -902,8 +923,13 @@ namespace PotatoMixer
                 posReady = true; };
             LocationChanged += delegate { if (posReady && WindowState == FormWindowState.Normal) { Eng.Set("Window.X", Left); Eng.Set("Window.Y", Top); Eng.Set("Window.Saved", 1); } };
             timer.Interval = 50; timer.Tick += Tick; timer.Start();
-            SizeChanged += delegate { if (WindowState == FormWindowState.Minimized) Mem.Trim(); };
-            FormClosing += delegate { Eng.Shutdown(); };
+            SizeChanged += delegate
+            {
+                if (WindowState == FormWindowState.Minimized) { Mem.Trim(); return; }
+                // rounded corners follow the real window size (the window may have started minimised, with a tiny size)
+                if (Width > 600 && (Region == null || Region.GetBounds(CreateGraphics()).Width < Width - 2)) Region = new Region(T.RR(new RectangleF(0, 0, Width, Height), 22));
+            };
+            FormClosing += delegate { if (tray != null) { tray.Visible = false; tray.Dispose(); } Eng.Shutdown(); };
         }
 
         [System.Runtime.InteropServices.DllImport("user32")] static extern bool ReleaseCapture();
@@ -922,7 +948,7 @@ namespace PotatoMixer
             Place(s, new AppBtn(), T.W - 400, 18, 130, 32);
             
             Place(s, new Cmd("Settings", ShowMenu, true), T.W - 262, 18, 100, 32);
-            Place(s, new WinBtn(false, delegate { WindowState = FormWindowState.Minimized; }), T.W - 140, 18, 38, 32);
+            Place(s, new WinBtn(false, delegate { HideToTray(); }), T.W - 140, 18, 38, 32);
             Place(s, new WinBtn(true, delegate { Close(); }), T.W - 96, 18, 38, 32);
         }
 
@@ -940,12 +966,14 @@ namespace PotatoMixer
                 s.Painter = delegate(Graphics g, int sw, int sh)
                 {
                     T.Card(g, new RectangleF(3, 2, sw - 6, sh - 8), 18);
-                    using (Pen p = new Pen(Color.FromArgb(34, 255, 255, 255))) g.DrawLine(p, 14, 92, sw - 14, 92);
+                    using (Pen p = new Pen(Color.FromArgb(34, 255, 255, 255))) { g.DrawLine(p, 14, hw ? 72 : 92, sw - 14, hw ? 72 : 92); float ln = (sw - 12) - 74, trim = ln * 0.025f; g.DrawLine(p, 74 + trim, FY + 242, sw - 12 - trim, FY + 242); }   // 5 % shorter (2.5 % off each end)   // second divider: only over the button column (starts after the fader), between the routing buttons and mono / solo / Mute
                     Font f = T.F(8, FontStyle.Bold);
                     if (hw)
                     {
-                        T.Txt(g, "Comp.", T.F(8.5f), T.Dim, new RectangleF(0, 270, sw / 3f, 14), StringAlignment.Center); T.Txt(g, "Denoiser", T.F(8.5f), T.Dim, new RectangleF(2 * sw / 3f, 270, sw / 3f, 14), StringAlignment.Center);
-                        T.Txt(g, "Gate", T.F(8.5f), T.Dim, new RectangleF(sw / 3f, 270, sw / 3f, 14), StringAlignment.Center);
+                        Font kf = T.F(8.5f);   // 2 x 2 knobs: Gate | Denoise on top, Comp. | Clicks below
+                        string[] kn = { "Gate", "Denoise", "Comp.", "Clicks" };
+                        for (int q = 0; q < 4; q++) T.Txt(g, kn[q], kf, T.Dim, new RectangleF(sw / 2f + (q % 2 == 0 ? -1 : 1) * (q < 2 ? 24 : 46) - 30, q < 2 ? 236 : 296, 60, 14), StringAlignment.Center);
+
                     }
                     else
                     {
@@ -956,21 +984,22 @@ namespace PotatoMixer
                     }
                 };
                 Controls.Add(s);
-                NameBox nbx = new NameBox(pre, defNames[i], hw) { App = i == 2 }; Place(s, nbx, 12, 10, w - 24, 78);
+                NameBox nbx = new NameBox(pre, defNames[i], hw) { App = i == 2 }; Place(s, nbx, 12, 10, w - 24, hw ? 58 : 78);
                 int fw = 62;
                 Fader fd = new Fader(pre, i < 5 ? i * 2 : 10 + (i - 5) * 8, 1) { BarW = 6, AllowDevice = i >= 5 };
-                Place(s, fd, 8, FY + 4, fw, SH - FY - 20); faders.Add(fd);
+                Place(s, fd, 8, FY + 4, fw, 392); faders.Add(fd);   // meter bars run FY+14 .. FY+386, the buttons line up with them
                 int bx = 8 + fw + 4, bw = w - bx - 12;
-                for (int k = 0; k < 5; k++) Place(s, new Tog(pre + "." + routes[k], routes[k], 0), bx, FY + 6 + k * 45, bw, 38);
-                Place(s, new Tog(pre + (hw ? ".Mono" : ".MC"), hw ? "mono" : "M.C", 3), bx, FY + 236, bw, 36);
-                Place(s, new Tog(pre + ".Solo", "solo", 2), bx, FY + 282, bw, 36);
+                for (int k = 0; k < 5; k++) Place(s, new Tog(pre + "." + routes[k], routes[k], 0), bx, FY + 14 + k * 42, bw, 35);
+                Place(s, new Tog(pre + (hw ? ".Mono" : ".MC"), hw ? "mono" : "M.C", 3), bx, FY + 267, bw, 35);
+                Place(s, new Tog(pre + ".Solo", "solo", 2), bx, FY + 309, bw, 35);
                 Tog muteTog = new Tog(pre + ".Mute", "Mute", 1); if (i >= 5) { muteTog.DevPrefix = pre; devTogs.Add(muteTog); }
-                Place(s, muteTog, bx, FY + 328, bw, 36);
+                Place(s, muteTog, bx, FY + 351, bw, 35);
                 if (hw)
                 {
-                    Place(s, new Pad(pre + ".Pan_x", pre + ".Pan_y", false), 12, 104, w - 24, 156);
-                    Place(s, new Knob(pre + ".Comp", 0, 10, 0, 46), w / 6 - 23, 288, 46, 46); Place(s, new Knob(pre + ".Denoiser", 0, 10, 0, 46), 5 * w / 6 - 23, 288, 46, 46);
-                    Place(s, new Knob(pre + ".Gate", 0, 10, 0, 46), w / 2 - 23, 288, 46, 46);
+                    Place(s, new Pad(pre + ".Pan_x", pre + ".Pan_y", false), 12, 84, w - 24, 148);
+                    int kxL = w / 2 - 24 - 21, kxR = w / 2 + 24 - 21, kyL = w / 2 - 46 - 21, kyR = w / 2 + 46 - 21;   // knob size 42 = same as the equalizer knobs   // top row (Gate, Denoise) close together, bottom row (Comp, Clicks) wider apart
+                    Place(s, new Knob(pre + ".Gate", 0, 10, 0, 42), kxL, 252, 42, 42); Place(s, new Knob(pre + ".Denoiser", 0, 10, 0, 42), kxR, 252, 42, 42);
+                    Place(s, new Knob(pre + ".Comp", 0, 10, 0, 42), kyL, 312, 42, 42); Place(s, new Knob(pre + ".Clicks", 0, 10, 0, 42), kyR, 312, 42, 42);
                 }
                 else
                 {
@@ -1049,6 +1078,38 @@ namespace PotatoMixer
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
             }
             catch (Exception ex) { Eng.Notify("Guide: " + ex.Message); }
+        }
+
+        // ---- system tray (the small icons next to the clock): DsMaN lives there while it is hidden or running at Windows start
+        public static readonly int WM_SHOWME = RegisterWindowMessage("DsMaN.ShowWindow");
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int RegisterWindowMessage(string s);
+        void BuildTray()
+        {
+            tray = new NotifyIcon { Icon = Icon, Text = "DsMaN  v" + Updater.Version, Visible = true };
+            ContextMenuStrip m = T.NewMenu();
+            m.Items.Add("Open DsMaN", null, delegate { RestoreFromTray(); });
+            m.Items.Add(new ToolStripSeparator());
+            m.Items.Add("Exit", null, delegate { Close(); });
+            tray.ContextMenuStrip = m;
+            tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) RestoreFromTray(); };
+        }
+        void HideToTray() { ShowInTaskbar = false; Hide(); }
+        void RestoreFromTray()
+        {
+            hideOnce = false;
+            ShowInTaskbar = true; if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            if (Width > 600) Region = new Region(T.RR(new RectangleF(0, 0, Width, Height), 22));
+            // Windows only lets the program in front steal focus; the Alt key press makes it accept our request, and TopMost lifts the window above the rest.
+            keybd_event(0x12, 0, 0, 0); SetForegroundWindow(Handle); keybd_event(0x12, 0, 2, 0);
+            TopMost = true; TopMost = false; Activate(); BringToFront();
+        }
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")] static extern void keybd_event(byte k, byte s, int f, int e);
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_SHOWME) { RestoreFromTray(); return; }   // a second copy was started: show this one instead
+            base.WndProc(ref m);
         }
 
         void ShowAppVol()
@@ -1146,6 +1207,29 @@ namespace PotatoMixer
 
     static class Program
     {
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")] static extern void keybd_event(byte k, byte s, int f, int e);
+        [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+        delegate bool EnumProc(IntPtr h, IntPtr p);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+        // Asks the copy that is already running (even when it is hidden in the tray) to show its window.
+        static void BringExistingToFront()
+        {
+            uint me = (uint)System.Diagnostics.Process.GetCurrentProcess().Id; int msg = MainForm.WM_SHOWME;
+            EnumWindows(delegate(IntPtr h, IntPtr p)
+            {
+                uint pid; GetWindowThreadProcessId(h, out pid); if (pid == me) return true;
+                System.Diagnostics.Process pr = null; try { pr = System.Diagnostics.Process.GetProcessById((int)pid); } catch { return true; }
+                if (pr.ProcessName != System.Diagnostics.Process.GetCurrentProcess().ProcessName) return true;
+                System.Text.StringBuilder cls = new System.Text.StringBuilder(256); GetClassName(h, cls, 256);
+                if (cls.ToString().StartsWith("WindowsForms10")) PostMessage(h, msg, IntPtr.Zero, IntPtr.Zero);
+                return true;
+            }, IntPtr.Zero);
+        }
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -1154,8 +1238,12 @@ namespace PotatoMixer
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += delegate(object s, System.Threading.ThreadExceptionEventArgs e) { Eng.LogError(e.Exception); };
             AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e) { Eng.LogError(e.ExceptionObject as Exception); };
+            // Only one copy may run: two copies would each keep their own settings and overwrite each other's changes.
+            bool first; System.Threading.Mutex single = new System.Threading.Mutex(true, "Local\\DsMaN-SingleInstance", out first);
+            if (!first) { BringExistingToFront(); return; }
             bool startup = Array.IndexOf(args, "--startup") >= 0;
             Application.Run(new MainForm(startup));
+            GC.KeepAlive(single);
         }
     }
 }
