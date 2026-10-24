@@ -11,8 +11,9 @@ Go to **Releases** and download `DsMaN.exe`. Run it – no install needed.
 ## Features
 - Microphone strips with **Denoiser / Gate / Compressor** (right-click and drag a knob)
 - Real volume + mute for each headphone (the faders follow the Windows device volume)
-- **B1 = virtual microphone** for Discord and games (with VB-Cable: choose `CABLE Output` as the mic)
+- **B1 = virtual microphone** for Discord and games (with VB-Cable: choose `DsMaN Mic` as the mic)
 - Per-app volume (App volume) and sharing an app's sound with your mic (Share app)
+- Two themes: **Default** and **Saudi green** (Settings → Theme)
 - Auto-save of every change, **automatic updates**, start with Windows
 - Built-in Arabic guide: *Settings → دليل استخدام*
 
@@ -22,11 +23,6 @@ Go to **Releases** and download `DsMaN.exe`. Run it – no install needed.
 
 ## Updates
 The program checks `update.txt` in this repository (`version=` and `url=`) and updates itself.
-To publish a new version: build, create a GitHub **Release** with `DsMaN.exe`, then raise `version=` in `update.txt`.
-
-## Build
-Run `build.bat` (uses the .NET Framework C# compiler that ships with Windows).
-The UI font (thmanyah Sans) is **not** included in this repository because its licence does not allow redistributing the font files; without it the program falls back to a system font. Release builds contain the font embedded.
 
 ## Notes
 - VB-CABLE is a separate product by VB-Audio and is not part of this repository.
