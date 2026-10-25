@@ -1,2 +1,2 @@
-version=2.3
+version=2.3.1
 url=https://github.com/abo5lood10/DsMaN/releases/latest/download/DsMaN.exe
