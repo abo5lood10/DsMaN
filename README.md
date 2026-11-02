@@ -5,8 +5,8 @@
 **خلاط صوت لويندوز** – برنامج واحد تتحكم فيه بصوت السماعات، وتنظّف المايك (دينويزر، جيت، كومب)، وترسله لديسكورد والألعاب.
 
 ## Download / التحميل
-Go to **Releases** and download `DsMaN.exe`. Run it – no install needed.
-من صفحة **Releases** نزّل `DsMaN.exe` وشغّله مباشرة.
+Go to **Releases** and download `DsMaN-Setup.exe` (installer: asks about a desktop shortcut and can install the virtual mic). `DsMaN.exe` is the portable version.
+من صفحة **Releases** نزّل `DsMaN-Setup.exe` وشغّله: يسألك عن اختصار سطح المكتب ويقدر يثبّت المايك الافتراضي.
 
 ## Features
 - Microphone strips with **Denoiser / Gate / Compressor** (right-click and drag a knob)
